@@ -6,9 +6,8 @@ using System.Threading.Tasks;
 
 namespace ADV.Application.Interface
 {
-    public interface IExtractor<TEntity> where TEntity : class
+    public interface IEtlService
     {
-        string SourceName { get; }
-        Task<IEnumerable<TEntity>> ExtractAsync();
+        Task RunEtlProcessAsync(CancellationToken cancellationToken);
     }
 }

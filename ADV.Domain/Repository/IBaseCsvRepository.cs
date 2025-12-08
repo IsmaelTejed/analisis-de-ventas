@@ -4,9 +4,11 @@ using System.Linq;
 using System.Text;
 using System.Threading.Tasks;
 
-namespace ADV.Persistense.repositorie.CSV
+namespace ADV.Domain.Repository
 {
-    public class CustomerRepositorie
+
+    public interface IBaseCsvRepository<TClass>
     {
+        Task<List<TClass>> GetAll();
     }
 }
