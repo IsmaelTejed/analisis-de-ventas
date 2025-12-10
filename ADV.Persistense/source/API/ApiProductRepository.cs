@@ -1,6 +1,7 @@
 ﻿using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Net.Http.Json;
 using System.Text;
 using System.Threading.Tasks;
 using ADV.Application.Interface;
@@ -13,13 +14,13 @@ namespace ADV.Persistense.repositorie.API
 {
     public class ApiProductRepository : IExtractor<ApiProducts>
     {
-        private readonly IHttpClientFactory _httpClientFactory;
+        private readonly System.Net.Http.IHttpClientFactory _httpClientFactory;
         private readonly IConfiguration _configuration;
         private readonly ILogger<ApiProductRepository> _logger;
 
         public string SourceName => "ApiProducts";
 
-        public ApiProductRepository(IHttpClientFactory httpClientFactory,
+        public ApiProductRepository(System.Net.Http.IHttpClientFactory httpClientFactory,
                                     IConfiguration configuration,
                                     ILogger<ApiProductRepository> _logger)
         {

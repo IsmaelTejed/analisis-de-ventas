@@ -1,4 +1,5 @@
 ﻿
+using System.Net.Http.Json;
 using ADV.Application.Interface;
 using ADV.Domain.Entities.Api;
 using Microsoft.Extensions.Configuration;
@@ -9,13 +10,13 @@ namespace ADV.Persistense.repositorie.API
 {
     public class ApiCustomerRepository : IExtractor<ApiCustomers>
     {
-        private readonly IHttpClientFactory _httpClientFactory;
+        private readonly System.Net.Http.IHttpClientFactory _httpClientFactory;
         private readonly IConfiguration _configuration;
         private readonly ILogger<ApiCustomerRepository> _logger;
 
         public string SourceName => "ApiCustomers";
 
-        public ApiCustomerRepository(IHttpClientFactory httpClientFactory,
+        public ApiCustomerRepository(System.Net.Http.IHttpClientFactory httpClientFactory,
                                      IConfiguration configuration,
                                      ILogger<ApiCustomerRepository> logger)
         {

@@ -1,6 +1,7 @@
 ﻿using ADV.Application.Interface;
 using ADV.Application.Repositories_Dwh;
 using ADV.Domain.Entities.Api;
+using ADV.Domain.Entities.CSV;
 using ADV.Domain.Entities.DB;
 using ADV.Domain.Entities.Dimencion;
 using ADV.Domain.Entities.Facts;
@@ -13,12 +14,15 @@ namespace ADV.Application.Services
     {
         private readonly ILogger<EtlService> _logger;
 
+        // FUENTES 
         private readonly IExtractor<DbSales> _dbSalesExtractor;
-        private readonly IExtractor<DBSales> _csvSalesExtractor;
-        private readonly IExtractor<DBProducts> _csvProductsExtractor;
+        private readonly IExtractor<CsvSales> _csvSalesExtractor;
+        private readonly IExtractor<Product> _csvProductsExtractor;
         private readonly IExtractor<ApiProducts> _apiProductsExtractor;
-        private readonly IExtractor<CsvCustomers> _csvCustomersExtractor;
+        private readonly IExtractor<Customer> _csvCustomersExtractor;
         private readonly IExtractor<ApiCustomers> _apiCustomersExtractor;
+
+        // DESTINO 
         private readonly IDimProductRepository _dimProductRepo;
         private readonly IDimCustomersRepository _dimCustomerRepo;
         private readonly IDimDateRepository _dimDateRepo;
@@ -28,10 +32,10 @@ namespace ADV.Application.Services
         public EtlService(
             ILogger<EtlService> logger,
             IExtractor<DbSales> dbSalesExtractor,
-            IExtractor<DBSales> csvSalesExtractor,
-            IExtractor<DBProducts> csvProductsExtractor,
+            IExtractor<CsvSales> csvSalesExtractor,
+            IExtractor<Product> csvProductsExtractor,
             IExtractor<ApiProducts> apiProductsExtractor,
-            IExtractor<CsvCustomers> csvCustomersExtractor,
+            IExtractor<Customer> csvCustomersExtractor,
             IExtractor<ApiCustomers> apiCustomersExtractor,
             IDimProductRepository dimProductRepo,
             IDimCustomersRepository dimCustomerRepo,
@@ -61,28 +65,24 @@ namespace ADV.Application.Services
             {
                 var sqlSales = await _dbSalesExtractor.ExtractAsync();
                 var csvSales = await _csvSalesExtractor.ExtractAsync();
-
                 var csvProducts = await _csvProductsExtractor.ExtractAsync();
                 var apiProducts = await _apiProductsExtractor.ExtractAsync();
-
                 var csvCustomers = await _csvCustomersExtractor.ExtractAsync();
                 var apiCustomers = await _apiCustomersExtractor.ExtractAsync();
 
-                _logger.LogInformation("Extracción completada. Datos en memoria.");
-
+                _logger.LogInformation("Extracción completada. Iniciando Carga...");
 
                 await LoadDimProducts(csvProducts, apiProducts);
-
                 await LoadDimCustomers(csvCustomers, apiCustomers);
 
                 var allSales = sqlSales.Concat(csvSales.Select(MapCsvToDbSales)).ToList();
 
                 await LoadDimStatus(allSales);
-
                 await LoadDimDate(allSales);
 
+                _logger.LogInformation("Iniciando proceso para FactSales...");
 
-                _logger.LogInformation("Dimensiones cargadas. Iniciando carga de FactSales...");
+                await CleanFactTables();
 
                 await LoadFactSales(allSales);
 
@@ -90,196 +90,47 @@ namespace ADV.Application.Services
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "ERROR FATAL durante el proceso ETL.");
+                _logger.LogError(ex, "ERROR FATAL en el proceso ETL.");
             }
         }
 
-        /// <summary>
-        /// Convierte una venta de CSV (CsvSales) a la entidad común (DbSales).
-        /// Esto permite tratar ambas fuentes de ventas como una sola lista.
-        /// </summary>
-        private DbSales MapCsvToDbSales(DBSales csv)
+        private async Task CleanFactTables()
         {
-            return new DbSales
+            _logger.LogInformation("Limpiando tabla FactSales (Truncate/Delete)...");
+
+            var allFacts = await _factSalesRepo.GetAll();
+
+            if (allFacts.Any())
             {
-                OrderID = csv.OrderID,
-                CustomerID = csv.CustomerID,
-                OrderDate = csv.OrderDate,
-                Status = csv.Status,
-                ProductID = csv.ProductID,
-                Quantity = csv.Quantity,
-                Price = csv.Price
-            };
-        }
-
-        private async Task LoadDimProducts(IEnumerable<DBProducts> csvProds, IEnumerable<ApiProducts> apiProds)
-        {
-            var existingIds = (await _dimProductRepo.GetAll())
-                              .Select(p => p.ProductId)
-                              .ToHashSet();
-
-            var newProducts = new List<DimProducts>();
-
-            var fromCsv = csvProds
-                .Where(p => !existingIds.Contains(p.ProductID))
-                .Select(p => new DimProducts
-                {
-                    ProductId = p.ProductID,
-                    ProductName = p.ProductName,
-                    Category = p.Category,
-                    Price = p.Price
-                });
-            newProducts.AddRange(fromCsv);
-
-            foreach (var p in fromCsv) existingIds.Add(p.ProductId);
-
-            var fromApi = apiProds
-                .Where(p => !existingIds.Contains(p.Id))
-                .Select(p => new DimProducts
-                {
-                    ProductId = p.Id,
-                    ProductName = p.Title,
-                    Category = p.Category,
-                    Price = p.Price
-                });
-            newProducts.AddRange(fromApi);
-
-            if (newProducts.Any())
-            {
-                await _dimProductRepo.SaveAll(newProducts.ToArray());
-                _logger.LogInformation("DimProducts: {Count} nuevos registros insertados.", newProducts.Count);
+                await _factSalesRepo.Remove(allFacts.ToArray());
+                _logger.LogInformation("Se han eliminado {Count} registros antiguos de FactSales.", allFacts.Count);
             }
             else
             {
-                _logger.LogInformation("DimProducts: No hay nuevos registros.");
+                _logger.LogInformation("FactSales ya estaba vacía. No se requiere limpieza.");
             }
         }
 
-        private async Task LoadDimCustomers(IEnumerable<CsvCustomers> csvCusts, IEnumerable<ApiCustomers> apiCusts)
-        {
-            var existingIds = (await _dimCustomerRepo.GetAll())
-                              .Select(c => c.CustomerId)
-                              .ToHashSet();
-
-            var newCustomers = new List<DimCustomers>();
-
-            var fromCsv = csvCusts
-                .Where(c => !existingIds.Contains(c.CustomerID))
-                .Select(c => new DimCustomers
-                {
-                    CustomerId = c.CustomerID,
-                    FirstName = c.FirstName,
-                    LastName = c.LastName,
-                    Email = c.Email,
-                    Phone = c.Phone,
-                    City = c.City,
-                    Country = c.Country
-                });
-            newCustomers.AddRange(fromCsv);
-
-            foreach (var c in fromCsv) existingIds.Add(c.CustomerId);
-
-            var fromApi = apiCusts
-                .Where(c => !existingIds.Contains(c.Id))
-                .Select(c => new DimCustomers
-                {
-                    CustomerId = c.Id,
-                    FirstName = c.Name,
-                    Email = c.Email,
-                    Country = c.Country,
-                    City = "Unknown",
-                    Phone = "Unknown"
-                });
-            newCustomers.AddRange(fromApi);
-
-            if (newCustomers.Any())
-            {
-                await _dimCustomerRepo.SaveAll(newCustomers.ToArray());
-                _logger.LogInformation("DimCustomers: {Count} nuevos registros insertados.", newCustomers.Count);
-            }
-        }
-
-        private async Task LoadDimStatus(IEnumerable<DbSales> sales)
-        {
-            var statuses = sales.Select(s => s.Status)
-                                .Where(s => !string.IsNullOrEmpty(s))
-                                .Distinct();
-
-            var existingStatuses = (await _dimStatusRepo.GetAll())
-                                   .Select(s => s.Status)
-                                   .ToHashSet();
-
-            var statusToLoad = statuses
-                .Where(status => !existingStatuses.Contains(status))
-                .Select(status => new DimStatus { Status = status })
-                .ToArray();
-
-            if (statusToLoad.Any())
-            {
-                await _dimStatusRepo.SaveAll(statusToLoad);
-                _logger.LogInformation("DimStatus: {Count} nuevos registros insertados.", statusToLoad.Length);
-            }
-        }
-
-        private async Task LoadDimDate(IEnumerable<DbSales> sales)
-        {
-            var dates = sales.Select(s => s.OrderDate.Date).Distinct();
-
-            var existingDateKeys = (await _dimDateRepo.GetAll())
-                                   .Select(d => d.DateKey)
-                                   .ToHashSet();
-
-            var newDates = dates
-                .Select(d => new
-                {
-                    DateObj = d,
-                    Key = (d.Year * 10000) + (d.Month * 100) + d.Day
-                })
-                .Where(x => !existingDateKeys.Contains(x.Key))
-                .Select(x => new DimDate
-                {
-                    DateKey = x.Key,
-                    CompleteDate = x.DateObj,
-                    Year = x.DateObj.Year,
-                    Month = x.DateObj.Month,
-                    MonthName = x.DateObj.ToString("MMMM")
-                })
-                .ToArray();
-
-            if (newDates.Any())
-            {
-                await _dimDateRepo.SaveAll(newDates);
-                _logger.LogInformation("DimDate: {Count} nuevos registros insertados.", newDates.Length);
-            }
-        }
 
         private async Task LoadFactSales(IEnumerable<DbSales> sales)
         {
-            _logger.LogInformation("Iniciando carga de FactSales... Creando diccionarios de búsqueda.");
+            _logger.LogInformation("Cargando FactSales... Optimizando con Diccionarios.");
 
-
-            var productsList = await _dimProductRepo.GetAll();
-            var customersList = await _dimCustomerRepo.GetAll();
-            var statusList = await _dimStatusRepo.GetAll();
-            var dateList = await _dimDateRepo.GetAll();
-
-            var productMap = productsList.ToDictionary(k => k.ProductId, v => v.ProductKey);
-            var customerMap = customersList.ToDictionary(k => k.CustomerId, v => v.CustomerKey);
-            var statusMap = statusList.ToDictionary(k => k.Status, v => v.StatusKey);
-
-            var dateMap = dateList.ToDictionary(k => k.CompleteDate.Date, v => v.DateKey);
+            var productsMap = (await _dimProductRepo.GetAll()).ToDictionary(k => k.ProductId, v => v.ProductKey);
+            var customersMap = (await _dimCustomerRepo.GetAll()).ToDictionary(k => k.CustomerId, v => v.CustomerKey);
+            var statusMap = (await _dimStatusRepo.GetAll()).ToDictionary(k => k.Status, v => v.StatusKey);
+            var dateMap = (await _dimDateRepo.GetAll()).ToDictionary(k => k.CompleteDate.Date, v => v.DateKey);
 
             var factsToLoad = sales
                 .Where(s => s.ProductID.HasValue && s.CustomerID.HasValue && !string.IsNullOrEmpty(s.Status))
                 .Select(sale => new
                 {
                     Sale = sale,
-                    ProductKey = productMap.GetValueOrDefault(sale.ProductID!.Value),
-                    CustomerKey = customerMap.GetValueOrDefault(sale.CustomerID!.Value),
+                    ProductKey = productsMap.GetValueOrDefault(sale.ProductID!.Value),
+                    CustomerKey = customersMap.GetValueOrDefault(sale.CustomerID!.Value),
                     StatusKey = statusMap.GetValueOrDefault(sale.Status!),
                     DateKey = dateMap.GetValueOrDefault(sale.OrderDate.Date)
                 })
-
                 .Where(x => x.ProductKey != 0 && x.CustomerKey != 0 && x.DateKey != 0 && x.StatusKey != 0)
                 .Select(x => new FactSales
                 {
@@ -294,14 +145,113 @@ namespace ADV.Application.Services
 
             if (factsToLoad.Any())
             {
-                _logger.LogInformation("Insertando {Count} hechos en FactSales...", factsToLoad.Length);
+                _logger.LogInformation("Insertando {Count} hechos en BD...", factsToLoad.Length);
                 await _factSalesRepo.SaveAll(factsToLoad);
-                _logger.LogInformation("Carga de FactSales completada exitosamente.");
+                _logger.LogInformation("Carga de FactSales completada.");
             }
-            else
+        }
+
+        private async Task LoadDimProducts(IEnumerable<Product> csvProds, IEnumerable<ApiProducts> apiProds)
+        {
+            var existingIds = (await _dimProductRepo.GetAll()).Select(p => p.ProductId).ToHashSet();
+            var newProducts = new List<DimProducts>();
+
+            var fromCsv = csvProds.Where(p => !existingIds.Contains(p.ProductID)).Select(p => new DimProducts
             {
-                _logger.LogWarning("No se generaron hechos para insertar. Verifique las coincidencias de fechas o IDs.");
+                ProductId = p.ProductID,
+                ProductName = p.ProductName,
+                Category = p.Category,
+                Price = p.Price
+            });
+            newProducts.AddRange(fromCsv);
+            foreach (var p in fromCsv) existingIds.Add(p.ProductId);
+
+            var fromApi = apiProds.Where(p => !existingIds.Contains(p.Id)).Select(p => new DimProducts
+            {
+                ProductId = p.Id,
+                ProductName = p.Title,
+                Category = p.Category,
+                Price = p.Price
+            });
+            newProducts.AddRange(fromApi);
+
+            if (newProducts.Any())
+            {
+                await _dimProductRepo.SaveAll(newProducts.ToArray());
+                _logger.LogInformation("DimProducts: {Count} nuevos registros.", newProducts.Count);
             }
+        }
+
+        private async Task LoadDimCustomers(IEnumerable<Customer> csvCusts, IEnumerable<ApiCustomers> apiCusts)
+        {
+            var existingIds = (await _dimCustomerRepo.GetAll()).Select(c => c.CustomerId).ToHashSet();
+            var newCustomers = new List<DimCustomers>();
+
+            var fromCsv = csvCusts.Where(c => !existingIds.Contains(c.CustomerID)).Select(c => new DimCustomers
+            {
+                CustomerId = c.CustomerID,
+                FirstName = c.FirstName,
+                LastName = c.LastName,
+                Email = c.Email,
+                Phone = c.Phone,
+                City = c.City,
+                Country = c.Country
+            });
+            newCustomers.AddRange(fromCsv);
+            foreach (var c in fromCsv) existingIds.Add(c.CustomerId);
+
+            var fromApi = apiCusts.Where(c => !existingIds.Contains(c.Id)).Select(c => new DimCustomers
+            {
+                CustomerId = c.Id,
+                FirstName = c.Name,
+                Email = c.Email,
+                Country = c.Country,
+                City = "Unknown",
+                Phone = "Unknown"
+            });
+            newCustomers.AddRange(fromApi);
+
+            if (newCustomers.Any())
+            {
+                await _dimCustomerRepo.SaveAll(newCustomers.ToArray());
+                _logger.LogInformation("DimCustomers: {Count} nuevos registros.", newCustomers.Count);
+            }
+        }
+
+        private async Task LoadDimStatus(IEnumerable<DbSales> sales)
+        {
+            var existingStatuses = (await _dimStatusRepo.GetAll()).Select(s => s.Status).ToHashSet();
+            var newStatuses = sales.Select(s => s.Status).Where(s => !string.IsNullOrEmpty(s)).Distinct()
+                .Where(s => !existingStatuses.Contains(s))
+                .Select(s => new DimStatus { Status = s }).ToArray();
+
+            if (newStatuses.Any()) await _dimStatusRepo.SaveAll(newStatuses);
+        }
+
+        private async Task LoadDimDate(IEnumerable<DbSales> sales)
+        {
+            var existingDateKeys = (await _dimDateRepo.GetAll()).Select(d => d.DateKey).ToHashSet();
+            var newDates = sales.Select(s => s.OrderDate.Date).Distinct()
+                .Select(d => new { Date = d, Key = (d.Year * 10000) + (d.Month * 100) + d.Day })
+                .Where(x => !existingDateKeys.Contains(x.Key))
+                .Select(x => new DimDate { DateKey = x.Key, CompleteDate = x.Date, Year = x.Date.Year, Month = x.Date.Month, MonthName = x.Date.ToString("MMMM") })
+                .ToArray();
+
+            if (newDates.Any()) await _dimDateRepo.SaveAll(newDates);
+        }
+
+        private DbSales MapCsvToDbSales(CsvSales csv)
+        {
+            return new DbSales
+            {
+                OrderID = csv.OrderID,
+                CustomerID = csv.CustomerID,
+                OrderDate = csv.OrderDate,
+                Status = csv.Status,
+                ProductID = csv.ProductID,
+                Quantity = csv.Quantity,
+                Price = csv.Price
+            };
         }
     }
 }

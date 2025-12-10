@@ -5,7 +5,7 @@ using CsvHelper;
 using Microsoft.Extensions.Logging;
 
 
-namespace TuProyecto.Application.Infrastructure
+namespace ADV.Application.Infrastructure
 {
    
     public sealed class GenericCsvReader<T> : IGenericCsvReader<T> where T : class
